@@ -2,7 +2,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const {
   buildCodexMcpConfigArgs,
   resolveCodexProjectToolMcpServerConfig,
@@ -27,7 +27,10 @@ const stateDir = process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cy
 const logDir = path.join(stateDir, "logs");
 const appServerPidFile = path.join(logDir, "shared-app-server.pid");
 const bridgePidFile = path.join(logDir, "shared-wechat.pid");
+const nightlyPidFile = path.join(logDir, "nightly.pid");
 const appServerLogFile = path.join(logDir, "shared-app-server.log");
+const bridgeLogFile = path.join(logDir, "shared-wechat.log");
+const nightlyLogFile = path.join(logDir, "nightly.log");
 const accountsDir = path.join(stateDir, "accounts");
 const sessionFile = process.env.CYBERBOSS_SESSIONS_FILE || path.join(stateDir, "sessions.json");
 
@@ -43,8 +46,8 @@ function isPidAlive(pid) {
   try {
     process.kill(numeric, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return error?.code === "EPERM";
   }
 }
 
@@ -113,7 +116,15 @@ function spawnDetachedCommand(command, args, { logFile, cwd = rootDir, env = {} 
     env: { ...process.env, ...env },
     detached: true,
     stdio: ["ignore", stdoutFd, stderrFd],
-    shell: process.platform === "win32",
+    shell: false,
+    windowsHide: true,
+  });
+  child.on("error", (error) => {
+    try {
+      fs.appendFileSync(logFile, `[cyberboss] spawn failed: ${error.message || String(error)}\n`, "utf8");
+    } catch {
+      // ignore logging failures
+    }
   });
   child.unref();
   return child.pid;
@@ -121,6 +132,9 @@ function spawnDetachedCommand(command, args, { logFile, cwd = rootDir, env = {} 
 
 async function ensureSharedAppServer() {
   if (process.env.CYBERBOSS_RUNTIME && process.env.CYBERBOSS_RUNTIME !== "codex") {
+    return { pid: 0, status: "skipped" };
+  }
+  if (!shouldUseSharedAppServer()) {
     return { pid: 0, status: "skipped" };
   }
 
@@ -138,6 +152,12 @@ async function ensureSharedAppServer() {
     CYBERBOSS_STATE_DIR: stateDir,
     TIMELINE_FOR_AGENT_STATE_DIR: stateDir,
   };
+  const shimDir = path.join(rootDir, "scripts", "shims");
+  if (process.platform === "win32" && fs.existsSync(path.join(shimDir, "git.exe"))) {
+    const inheritedPath = process.env.Path || process.env.PATH || "";
+    env.Path = `${shimDir}${path.delimiter}${inheritedPath}`;
+    env.PATH = env.Path;
+  }
   if (!process.env.TIMELINE_FOR_AGENT_CHROME_PATH) {
     env.TIMELINE_FOR_AGENT_CHROME_PATH =
       process.env.CYBERBOSS_SCREENSHOT_CHROME_PATH
@@ -156,13 +176,31 @@ async function ensureSharedAppServer() {
   });
   writePidFile(appServerPidFile, pid);
 
-  const ready = await waitForReadyz();
+  const ready = await waitForReadyz({ attempts: 40, delayMs: 500 });
   if (!ready) {
     throw new Error(`failed to start shared app-server; check ${appServerLogFile}`);
   }
 
   writePidFile(appServerPidFile, pid);
   return { pid, status: "started" };
+}
+
+function shouldUseSharedAppServer() {
+  const mode = normalizeText(process.env.CYBERBOSS_CODEX_ENDPOINT_MODE).toLowerCase();
+  if (mode === "spawn" || mode === "stdio") {
+    return false;
+  }
+  if (mode === "shared" || mode === "websocket" || process.env.CYBERBOSS_FORCE_SHARED_APP_SERVER === "1") {
+    return true;
+  }
+  const command = process.env.CYBERBOSS_CODEX_COMMAND || "codex";
+  const result = spawnSync(command, ["app-server", "--help"], {
+    encoding: "utf8",
+    windowsHide: true,
+    shell: process.platform === "win32",
+  });
+  const helpText = `${result.stdout || ""}\n${result.stderr || ""}`;
+  return /ws:\/\/host:port|wss:\/\/host:port|ws:\/\/|wss:\/\//i.test(helpText);
 }
 
 function ensureBridgeNotRunning() {
@@ -273,13 +311,18 @@ module.exports = {
   logDir,
   appServerPidFile,
   bridgePidFile,
+  nightlyPidFile,
   appServerLogFile,
+  bridgeLogFile,
+  nightlyLogFile,
   ensureLogDir,
   isPidAlive,
   readPidFile,
   writePidFile,
   removePidFileIfMatches,
+  spawnDetachedCommand,
   ensureSharedAppServer,
+  shouldUseSharedAppServer,
   ensureBridgeNotRunning,
   resolveBoundThread,
 };

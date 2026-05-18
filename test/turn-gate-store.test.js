@@ -10,11 +10,149 @@ test("turn gate tracks pending scopes until the turn is released", () => {
 
   assert.equal(scopeKey, "binding-1::/workspace");
   assert.equal(gate.isPending("binding-1", "/workspace"), true);
+  assert.equal(gate.getPending("binding-1", "/workspace").threadId, "");
 
   gate.attachThread(scopeKey, "thread-1");
+  assert.equal(gate.getPending("binding-1", "/workspace").threadId, "thread-1");
   gate.releaseThread("thread-1");
 
   assert.equal(gate.isPending("binding-1", "/workspace"), false);
+});
+
+test("stale pre-thread turn gates are released before they block new work", () => {
+  const gate = new TurnGateStore();
+  gate.begin("binding-1", "/workspace", { nowMs: Date.now() - 3 * 60_000 });
+  let released = false;
+  const originalReleasePending = gate.releasePending.bind(gate);
+  gate.releasePending = (bindingKey, workspaceRoot) => {
+    released = true;
+    originalReleasePending(bindingKey, workspaceRoot);
+  };
+
+  const appLike = {
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          getThreadIdForWorkspace() {
+            return "thread-1";
+          },
+        };
+      },
+    },
+    threadStateStore: {
+      getThreadState() {
+        return null;
+      },
+    },
+    turnGateStore: gate,
+    turnBoundaryScopeKeys: new Set(),
+    releaseStaleTurnGateIfSafe: CyberbossApp.prototype.releaseStaleTurnGateIfSafe,
+  };
+
+  const blocked = CyberbossApp.prototype.isTurnDispatchBlocked.call(appLike, "binding-1", "/workspace");
+
+  assert.equal(blocked, false);
+  assert.equal(released, true);
+  assert.equal(gate.isPending("binding-1", "/workspace"), false);
+});
+
+test("fresh turn gates still block new work", () => {
+  const gate = new TurnGateStore();
+  gate.begin("binding-1", "/workspace", { nowMs: Date.now() });
+  const appLike = {
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          getThreadIdForWorkspace() {
+            return "thread-1";
+          },
+        };
+      },
+    },
+    threadStateStore: {
+      getThreadState() {
+        return null;
+      },
+    },
+    turnGateStore: gate,
+    turnBoundaryScopeKeys: new Set(),
+    releaseStaleTurnGateIfSafe: CyberbossApp.prototype.releaseStaleTurnGateIfSafe,
+  };
+
+  const blocked = CyberbossApp.prototype.isTurnDispatchBlocked.call(appLike, "binding-1", "/workspace");
+
+  assert.equal(blocked, true);
+  assert.equal(gate.isPending("binding-1", "/workspace"), true);
+});
+
+test("stale turn gates are not released while the runtime thread is busy", () => {
+  const gate = new TurnGateStore();
+  const scopeKey = gate.begin("binding-1", "/workspace", { nowMs: Date.now() - 20 * 60_000 });
+  gate.attachThread(scopeKey, "thread-1");
+  const appLike = {
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          getThreadIdForWorkspace() {
+            return "thread-1";
+          },
+        };
+      },
+    },
+    threadStateStore: {
+      getThreadState() {
+        return { status: "running", pendingApproval: null };
+      },
+    },
+    turnGateStore: gate,
+    turnBoundaryScopeKeys: new Set(),
+    releaseStaleTurnGateIfSafe: CyberbossApp.prototype.releaseStaleTurnGateIfSafe,
+  };
+
+  const blocked = CyberbossApp.prototype.isTurnDispatchBlocked.call(appLike, "binding-1", "/workspace");
+
+  assert.equal(blocked, true);
+  assert.equal(gate.isPending("binding-1", "/workspace"), true);
+});
+
+test("stale running runtime thread is released before it blocks new work", () => {
+  const gate = new TurnGateStore();
+  const scopeKey = gate.begin("binding-1", "/workspace", { nowMs: Date.now() - 40 * 60_000 });
+  gate.attachThread(scopeKey, "thread-1");
+  let staleReason = "";
+  const appLike = {
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          getThreadIdForWorkspace() {
+            return "thread-1";
+          },
+        };
+      },
+    },
+    threadStateStore: {
+      getThreadState() {
+        return {
+          status: "running",
+          pendingApproval: null,
+          updatedAt: new Date(Date.now() - 40 * 60_000).toISOString(),
+        };
+      },
+      markStale(threadId, reason) {
+        staleReason = `${threadId}:${reason}`;
+      },
+    },
+    turnGateStore: gate,
+    turnBoundaryScopeKeys: new Set(),
+    releaseStaleRuntimeThreadIfSafe: CyberbossApp.prototype.releaseStaleRuntimeThreadIfSafe,
+    releaseStaleTurnGateIfSafe: CyberbossApp.prototype.releaseStaleTurnGateIfSafe,
+  };
+
+  const blocked = CyberbossApp.prototype.isTurnDispatchBlocked.call(appLike, "binding-1", "/workspace");
+
+  assert.equal(blocked, false);
+  assert.equal(gate.isPending("binding-1", "/workspace"), false);
+  assert.match(staleReason, /^thread-1:Runtime turn stale/);
 });
 
 test("handlePreparedMessage queues a normal inbound message while the scope is busy", async () => {

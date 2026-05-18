@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-label="Dashboard screenshot placeholder">
+  <rect width="960" height="540" fill="#fdf6f0"/>
+  <rect x="70" y="58" width="820" height="424" rx="26" fill="#fffaf7" stroke="#ead8cf"/>
+  <path d="M180 150 C280 128, 390 166, 510 142 C610 122, 710 146, 790 134" fill="none" stroke="#c9748a" stroke-width="4" stroke-linecap="round"/>
+  <text x="480" y="245" text-anchor="middle" font-family="serif" font-size="42" fill="#3d2b1f">小窝 Dashboard</text>
+  <text x="480" y="302" text-anchor="middle" font-family="serif" font-size="22" fill="#8a7061">Replace this placeholder with a real screenshot</text>
+</svg>

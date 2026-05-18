@@ -1,15 +1,21 @@
 class TurnGateStore {
   constructor() {
     this.scopeByThreadId = new Map();
-    this.pendingScopeKeys = new Set();
+    this.pendingByScopeKey = new Map();
   }
 
-  begin(bindingKey, workspaceRoot) {
+  begin(bindingKey, workspaceRoot, { nowMs = Date.now() } = {}) {
     const scopeKey = buildTurnScopeKey(bindingKey, workspaceRoot);
     if (!scopeKey) {
       return "";
     }
-    this.pendingScopeKeys.add(scopeKey);
+    this.pendingByScopeKey.set(scopeKey, {
+      scopeKey,
+      bindingKey: normalizeText(bindingKey),
+      workspaceRoot: normalizeText(workspaceRoot),
+      threadId: "",
+      startedAtMs: normalizeTimestampMs(nowMs),
+    });
     return scopeKey;
   }
 
@@ -19,6 +25,13 @@ class TurnGateStore {
     if (!normalizedScopeKey || !normalizedThreadId) {
       return;
     }
+    const pending = this.pendingByScopeKey.get(normalizedScopeKey);
+    if (pending) {
+      this.pendingByScopeKey.set(normalizedScopeKey, {
+        ...pending,
+        threadId: normalizedThreadId,
+      });
+    }
     this.scopeByThreadId.set(normalizedThreadId, normalizedScopeKey);
   }
 
@@ -27,7 +40,12 @@ class TurnGateStore {
     if (!scopeKey) {
       return;
     }
-    this.pendingScopeKeys.delete(scopeKey);
+    this.pendingByScopeKey.delete(scopeKey);
+    for (const [threadId, mappedScopeKey] of this.scopeByThreadId.entries()) {
+      if (mappedScopeKey === scopeKey) {
+        this.scopeByThreadId.delete(threadId);
+      }
+    }
   }
 
   releaseThread(threadId) {
@@ -37,14 +55,24 @@ class TurnGateStore {
     }
     const scopeKey = this.scopeByThreadId.get(normalizedThreadId) || "";
     if (scopeKey) {
-      this.pendingScopeKeys.delete(scopeKey);
+      this.pendingByScopeKey.delete(scopeKey);
       this.scopeByThreadId.delete(normalizedThreadId);
     }
   }
 
   isPending(bindingKey, workspaceRoot) {
     const scopeKey = buildTurnScopeKey(bindingKey, workspaceRoot);
-    return scopeKey ? this.pendingScopeKeys.has(scopeKey) : false;
+    return scopeKey ? this.pendingByScopeKey.has(scopeKey) : false;
+  }
+
+  getPending(bindingKey, workspaceRoot) {
+    const scopeKey = buildTurnScopeKey(bindingKey, workspaceRoot);
+    const pending = scopeKey ? this.pendingByScopeKey.get(scopeKey) : null;
+    return pending ? { ...pending } : null;
+  }
+
+  releasePending(bindingKey, workspaceRoot) {
+    this.releaseScope(bindingKey, workspaceRoot);
   }
 }
 
@@ -59,6 +87,11 @@ function buildTurnScopeKey(bindingKey, workspaceRoot) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeTimestampMs(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : Date.now();
 }
 
 module.exports = { TurnGateStore };

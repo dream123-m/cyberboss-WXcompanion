@@ -15,17 +15,17 @@ async function main() {
   const runtime = process.env.CYBERBOSS_RUNTIME || "codex";
 
   if (runtime === "codex") {
-    await ensureSharedAppServer();
+    const appServer = await ensureSharedAppServer();
     const { threadId, workspaceRoot: resolvedWorkspaceRoot } = resolveBoundThread(workspaceRoot);
-    const child = spawn(process.env.CYBERBOSS_CODEX_COMMAND || "codex", [
+    const args = [
       "resume",
       threadId,
-      "--remote",
-      listenUrl,
+      ...(appServer.status === "skipped" ? [] : ["--remote", listenUrl]),
       "-C",
       resolvedWorkspaceRoot,
       ...process.argv.slice(2),
-    ], {
+    ];
+    const child = spawn(process.env.CYBERBOSS_CODEX_COMMAND || "codex", args, {
       stdio: "inherit",
       shell: process.platform === "win32",
     });

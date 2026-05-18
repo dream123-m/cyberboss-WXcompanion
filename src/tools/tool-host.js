@@ -117,6 +117,51 @@ const PROJECT_TOOLS = [
     },
   },
   {
+    name: "cyberboss_state_read",
+    description: "Read durable Cyberboss private state. Use namespaces such as relationship, preferences, current_focus, or self_notes.",
+    shortHint: "Read a durable private state namespace.",
+    topics: ["state", "memory"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        namespace: { type: "string", description: "Optional namespace. Omit to read all namespaces." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.state.read(args);
+      const label = result.namespace || "all";
+      return {
+        text: `State loaded: ${label}.`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_state_update",
+    description: "Update durable Cyberboss private state with a JSON object patch. This is generic state storage, not a single-purpose relationship tool.",
+    shortHint: "Merge or replace a durable private state namespace.",
+    topics: ["state", "memory"],
+    inputSchema: {
+      type: "object",
+      required: ["namespace", "patch"],
+      properties: {
+        namespace: { type: "string", description: "Namespace such as relationship, preferences, current_focus, or self_notes." },
+        patch: { type: "object", description: "JSON object to merge into the namespace, or replace it when mode is replace." },
+        mode: { type: "string", description: "merge or replace. Defaults to merge." },
+        reason: { type: "string", description: "Short private reason for the update." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.state.update(args);
+      return {
+        text: `State updated: ${result.namespace}.`,
+        data: result,
+      };
+    },
+  },
+  {
     name: "cyberboss_system_send",
     description: "Queue an internal Cyberboss system trigger for the current bound workspace and chat.",
     shortHint: "Queue an internal system message for the current workspace.",
@@ -256,8 +301,8 @@ const PROJECT_TOOLS = [
   },
   {
     name: "cyberboss_sticker_save_from_inbox",
-    description: `Save one or more inbox images as reusable sticker GIFs after reading them all. Use an items array even for one sticker. ${STICKER_TAG_GUIDANCE} ${STICKER_DESC_GUIDANCE}`,
-    shortHint: "Save inbox stickers with an items array.",
+    description: `Save one or more inbox or generated/local image files as reusable sticker GIFs after reading them all. Local files must be under the current workspace, Cyberboss generated folder, or Cyberboss inbox. Use an items array even for one sticker. ${STICKER_TAG_GUIDANCE} ${STICKER_DESC_GUIDANCE}`,
+    shortHint: "Save inbox/local stickers with an items array.",
     topics: ["sticker"],
     inputSchema: {
       type: "object",
@@ -270,7 +315,7 @@ const PROJECT_TOOLS = [
             type: "object",
             required: ["filePath", "tags", "desc"],
             properties: {
-              filePath: { type: "string", description: "Absolute inbox image path under ~/.cyberboss/inbox." },
+              filePath: { type: "string", description: "Image path under ~/.cyberboss/inbox, the current workspace, or ~/.cyberboss/generated." },
               tags: {
                 type: "array",
                 description: "One to three sticker tags. New short tags are allowed when the current catalog does not fit.",
@@ -287,6 +332,48 @@ const PROJECT_TOOLS = [
     },
     async handler({ services, args, context }) {
       const result = await services.sticker.saveFromInbox(args, context);
+      const duplicateNote = result.dedupedCount > 0
+        ? " Existing stickers usually mean the user only sent them for you to see. Do not mention duplicates; just reply normally."
+        : "";
+      return {
+        text: `Sticker batch processed: ${result.createdCount} saved, ${result.dedupedCount} already existed.${duplicateNote}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_sticker_save_from_file",
+    description: `Save one or more generated/local image files as reusable sticker GIFs. Files must be under the current workspace, Cyberboss generated folder, or Cyberboss inbox. Use this for stickers you just created locally. Use an items array even for one sticker. ${STICKER_TAG_GUIDANCE} ${STICKER_DESC_GUIDANCE}`,
+    shortHint: "Save local generated stickers with an items array.",
+    topics: ["sticker"],
+    inputSchema: {
+      type: "object",
+      required: ["items"],
+      properties: {
+        items: {
+          type: "array",
+          description: "One to ten generated/local stickers to save in one call.",
+          items: {
+            type: "object",
+            required: ["filePath", "tags", "desc"],
+            properties: {
+              filePath: { type: "string", description: "Local image path under the current workspace, ~/.cyberboss/generated, or ~/.cyberboss/inbox." },
+              tags: {
+                type: "array",
+                description: "One to three sticker tags. New short tags are allowed when the current catalog does not fit.",
+                items: { type: "string" },
+              },
+              desc: { type: "string", description: STICKER_DESC_FIELD_DESCRIPTION },
+            },
+            additionalProperties: false,
+          },
+        },
+        userId: { type: "string", description: "Optional explicit WeChat user id." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.sticker.saveFromFile(args, context);
       const duplicateNote = result.dedupedCount > 0
         ? " Existing stickers usually mean the user only sent them for you to see. Do not mention duplicates; just reply normally."
         : "";

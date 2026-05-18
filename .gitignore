@@ -1,9 +1,16 @@
 node_modules/
 .DS_Store
 .env
+.env.*
+!.env.example
+.vscode/
 .mcp.json
 .claude/settings.json
 .claude/settings.local.json
 npm-debug.log*
+logs/
+*.pid
+scripts/*.exe
+scripts/shims/
 third_party/
 firmware/

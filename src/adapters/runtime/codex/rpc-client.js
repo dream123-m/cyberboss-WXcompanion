@@ -5,6 +5,7 @@ const { buildCodexMcpConfigArgs } = require("./mcp-config");
 
 const IS_WINDOWS = os.platform() === "win32";
 const DEFAULT_CODEX_COMMAND = "codex";
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const WINDOWS_EXECUTABLE_SUFFIX_RE = /\.(cmd|exe|bat)$/i;
 const CODEX_CLIENT_INFO = {
   name: "cyberboss_agent",
@@ -58,6 +59,7 @@ class CodexRpcClient {
           env: { ...this.env },
           stdio: ["pipe", "pipe", "pipe"],
           shell: false,
+          windowsHide: true,
         });
         break;
       } catch (error) {
@@ -234,9 +236,33 @@ class CodexRpcClient {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const payload = JSON.stringify({ id, method, params });
     const responsePromise = new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timeoutMs = readRequestTimeoutMs(this.env);
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) {
+          return;
+        }
+        this.pending.delete(id);
+        this.resetTransportAfterTimeout();
+        reject(new Error(`Codex RPC request timed out method=${method} timeoutMs=${timeoutMs}`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
     });
-    this.sendRaw(payload);
+    try {
+      this.sendRaw(payload);
+    } catch (error) {
+      const pending = this.pending.get(id);
+      this.pending.delete(id);
+      pending?.reject(error);
+    }
     return responsePromise;
   }
 
@@ -288,10 +314,35 @@ class CodexRpcClient {
       listener(parsed);
     }
   }
+
+  resetTransportAfterTimeout() {
+    this.isReady = false;
+    if (this.socket) {
+      try {
+        this.socket.close();
+      } catch {
+        // best effort
+      }
+      this.socket = null;
+    }
+    if (this.child) {
+      try {
+        this.child.kill();
+      } catch {
+        // best effort
+      }
+      this.child = null;
+    }
+  }
 }
 
 function resolveDefaultCodexCommand(env = process.env) {
   return normalizeNonEmptyString(env.CYBERBOSS_CODEX_COMMAND) || DEFAULT_CODEX_COMMAND;
+}
+
+function readRequestTimeoutMs(env = process.env) {
+  const parsed = Number(env?.CYBERBOSS_CODEX_RPC_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed >= 5_000 ? parsed : DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
 function buildCodexCommandCandidates(configuredCommand) {

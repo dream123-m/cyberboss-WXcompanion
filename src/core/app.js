@@ -48,6 +48,10 @@ const SESSION_EXPIRED_ERRCODE = -14;
 const RETRY_DELAY_MS = 2_000;
 const BACKOFF_DELAY_MS = 30_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
+const MAX_SYSTEM_MESSAGE_ATTEMPTS = 3;
+const PRE_THREAD_TURN_GATE_STALE_MS = 2 * 60_000;
+const ATTACHED_TURN_GATE_STALE_MS = 10 * 60_000;
+const RUNNING_THREAD_STALE_MS = 20 * 60_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
 
@@ -167,7 +171,6 @@ class CyberbossApp {
           await Promise.all([
             this.flushDueReminders(account),
             this.flushPendingInboundMessages(),
-            this.flushPendingSystemMessages(),
             this.flushPendingTimelineScreenshots(account),
           ]);
           const response = await this.channelAdapter.getUpdates({
@@ -417,11 +420,87 @@ class CyberbossApp {
       return true;
     }
     if (this.turnGateStore.isPending(bindingKey, workspaceRoot)) {
-      return true;
+      if (
+        typeof this.releaseStaleTurnGateIfSafe !== "function"
+        || !this.releaseStaleTurnGateIfSafe(bindingKey, workspaceRoot)
+      ) {
+        return true;
+      }
     }
     const threadId = this.runtimeAdapter.getSessionStore().getThreadIdForWorkspace(bindingKey, workspaceRoot);
     const threadState = threadId ? this.threadStateStore.getThreadState(threadId) : null;
-    return threadState?.status === "running" || hasRpcId(threadState?.pendingApproval?.requestId);
+    if (
+      typeof this.releaseStaleRuntimeThreadIfSafe === "function"
+      && this.releaseStaleRuntimeThreadIfSafe(threadId, threadState, "dispatch")
+    ) {
+      return false;
+    }
+    return isRuntimeThreadBusy(threadState);
+  }
+
+  releaseStaleTurnGateIfSafe(bindingKey, workspaceRoot) {
+    const pending = typeof this.turnGateStore.getPending === "function"
+      ? this.turnGateStore.getPending(bindingKey, workspaceRoot)
+      : null;
+    if (!pending) {
+      return false;
+    }
+
+    const ageMs = Date.now() - (Number(pending.startedAtMs) || Date.now());
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const threadId = normalizeCommandArgument(pending.threadId)
+      || sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
+    const threadState = threadId ? this.threadStateStore.getThreadState(threadId) : null;
+    if (
+      isRuntimeThreadBusy(threadState)
+      && (
+        typeof this.releaseStaleRuntimeThreadIfSafe !== "function"
+        || !this.releaseStaleRuntimeThreadIfSafe(threadId, threadState, "turn gate")
+      )
+    ) {
+      return false;
+    }
+
+    const staleMs = pending.threadId ? ATTACHED_TURN_GATE_STALE_MS : PRE_THREAD_TURN_GATE_STALE_MS;
+    if (ageMs < staleMs) {
+      return false;
+    }
+
+    if (typeof this.turnGateStore.releasePending === "function") {
+      this.turnGateStore.releasePending(bindingKey, workspaceRoot);
+    } else {
+      this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
+    }
+    console.warn(
+      `[cyberboss] released stale turn gate binding=${bindingKey} workspace=${workspaceRoot} thread=${threadId || ""} ageMs=${Math.round(ageMs)}`
+    );
+    return true;
+  }
+
+  releaseStaleRuntimeThreadIfSafe(threadId, threadState, reason = "") {
+    if (!threadId || !threadState || threadState.status !== "running") {
+      return false;
+    }
+    if (hasRpcId(threadState?.pendingApproval?.requestId)) {
+      return false;
+    }
+    const updatedAtMs = Date.parse(threadState.updatedAt || "");
+    if (!Number.isFinite(updatedAtMs)) {
+      return false;
+    }
+    const ageMs = Date.now() - updatedAtMs;
+    if (ageMs < RUNNING_THREAD_STALE_MS) {
+      return false;
+    }
+    this.threadStateStore.markStale?.(
+      threadId,
+      `Runtime turn stale for ${Math.round(ageMs / 1000)}s during ${reason || "dispatch"}.`
+    );
+    this.turnGateStore.releaseThread(threadId);
+    console.warn(
+      `[cyberboss] released stale running thread thread=${threadId} ageMs=${Math.round(ageMs)} reason=${reason || "dispatch"}`
+    );
+    return true;
   }
 
   async dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared }) {
@@ -830,14 +909,33 @@ class CyberbossApp {
     const pendingMessages = this.systemMessageDispatcher?.drainPending() || [];
     for (const message of pendingMessages) {
       try {
+        console.log(`[cyberboss] system message dispatching id=${message.id} attempts=${message.attempts || 0}`);
         const dispatched = await this.dispatchSystemMessage(message);
         if (!dispatched) {
-          this.systemMessageDispatcher.requeue(message);
+          this.requeueSystemMessage(message, "turn is still running");
         }
-      } catch {
-        this.systemMessageDispatcher?.requeue(message);
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : String(error || "unknown error");
+        this.requeueSystemMessage(message, messageText);
       }
     }
+  }
+
+  requeueSystemMessage(message, reason) {
+    const attempts = Math.max(0, Number(message?.attempts) || 0) + 1;
+    if (attempts >= MAX_SYSTEM_MESSAGE_ATTEMPTS) {
+      console.error(`[cyberboss] dropping system message id=${message?.id || ""} attempts=${attempts} reason=${reason}`);
+      return;
+    }
+    const delayMs = attempts === 1 ? 60_000 : 5 * 60_000;
+    const nextAttemptAt = new Date(Date.now() + delayMs).toISOString();
+    console.warn(`[cyberboss] requeued system message id=${message?.id || ""} attempts=${attempts} nextAttemptAt=${nextAttemptAt} reason=${reason}`);
+    this.systemMessageDispatcher?.requeue({
+      ...message,
+      attempts,
+      nextAttemptAt,
+      lastError: String(reason || "unknown error").slice(0, 500),
+    });
   }
 
   async flushPendingTimelineScreenshots(account) {
@@ -879,7 +977,7 @@ class CyberbossApp {
   }
 
   resolveLongPollTimeoutMs() {
-    if (this.systemMessageDispatcher?.hasPending()) {
+    if (this.systemMessageDispatcher?.hasReady?.()) {
       return MIN_LONG_POLL_TIMEOUT_MS;
     }
     if (this.activeAccountId && this.timelineScreenshotQueue.hasPendingForAccount(this.activeAccountId)) {
@@ -2344,4 +2442,10 @@ function stringifyRpcId(value) {
 
 function hasRpcId(value) {
   return stringifyRpcId(value) !== "";
+}
+
+function isRuntimeThreadBusy(threadState) {
+  return threadState?.status === "running"
+    || threadState?.status === "waiting_approval"
+    || hasRpcId(threadState?.pendingApproval?.requestId);
 }

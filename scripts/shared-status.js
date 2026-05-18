@@ -3,18 +3,26 @@ const {
   listenUrl,
   appServerPidFile,
   bridgePidFile,
+  nightlyPidFile,
   readPidFile,
   isPidAlive,
+  shouldUseSharedAppServer,
 } = require("./shared-common");
 
 async function main() {
   const runtime = process.env.CYBERBOSS_RUNTIME || "codex";
   const isCodex = runtime === "codex";
+  const usesSharedAppServer = isCodex && shouldUseSharedAppServer();
   console.log(`runtime=${runtime}`);
   console.log(`listen=${listenUrl}`);
-  printPidState("shared_app_server_pid", appServerPidFile);
+  if (usesSharedAppServer) {
+    printPidState("shared_app_server_pid", appServerPidFile);
+  } else {
+    console.log(`shared_app_server_pid=skipped`);
+  }
   printPidState("shared_cyberboss_pid", bridgePidFile);
-  if (!isCodex) {
+  printPidState("nightly_pid", nightlyPidFile);
+  if (!usesSharedAppServer) {
     console.log(`readyz=skipped`);
   } else {
     console.log(`readyz=${await checkReadyz() ? "ok" : "down"}`);

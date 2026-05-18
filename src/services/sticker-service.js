@@ -38,7 +38,23 @@ class StickerService {
 
   async saveFromInbox({ items = [], userId = "" } = {}, context = {}) {
     ensureStickerCatalogFilesSync(this.config);
-    const normalizedItems = normalizeStickerSaveItems(items, this.config);
+    const normalizedItems = normalizeStickerSaveItems(items, this.config, {
+      resolveFilePath: resolveStickerInboxOrLocalFilePath,
+      context,
+    });
+    return await this.saveNormalizedItems(normalizedItems, userId, context);
+  }
+
+  async saveFromFile({ items = [], userId = "" } = {}, context = {}) {
+    ensureStickerCatalogFilesSync(this.config);
+    const normalizedItems = normalizeStickerSaveItems(items, this.config, {
+      resolveFilePath: resolveStickerLocalFilePath,
+      context,
+    });
+    return await this.saveNormalizedItems(normalizedItems, userId, context);
+  }
+
+  async saveNormalizedItems(normalizedItems = [], userId = "", context = {}) {
     const index = loadStickerIndexSync(this.config);
     const tagCatalog = loadStickerTagsSync(this.config);
     const hashByStickerId = buildStickerHashIndex(this.config, index);
@@ -430,7 +446,10 @@ function buildStickerSavedText({ stickerId, tags, desc }) {
   ].join("\n");
 }
 
-function normalizeStickerSaveItems(items, config = {}) {
+function normalizeStickerSaveItems(items, config = {}, options = {}) {
+  const resolveFilePath = typeof options.resolveFilePath === "function"
+    ? options.resolveFilePath
+    : resolveStickerInboxFilePath;
   if (!Array.isArray(items)) {
     throw new Error("Sticker save items must be an array.");
   }
@@ -445,7 +464,7 @@ function normalizeStickerSaveItems(items, config = {}) {
       throw new Error(`Sticker save item must be an object: ${index}`);
     }
     return {
-      filePath: resolveStickerInboxFilePath(config, item.filePath),
+      filePath: resolveFilePath(config, item.filePath, options.context),
       tags: normalizeStickerTags(item.tags),
       desc: normalizeStickerDesc(item.desc),
     };
@@ -529,6 +548,48 @@ function resolveStickerInboxFilePath(config = {}, filePath = "") {
     throw new Error(`Sticker inbox file must be a file: ${resolvedInputPath}`);
   }
   return resolvedInputPath;
+}
+
+function resolveStickerInboxOrLocalFilePath(config = {}, filePath = "", context = {}) {
+  try {
+    return resolveStickerInboxFilePath(config, filePath);
+  } catch (inboxError) {
+    try {
+      return resolveStickerLocalFilePath(config, filePath, context);
+    } catch (localError) {
+      throw inboxError;
+    }
+  }
+}
+
+function resolveStickerLocalFilePath(config = {}, filePath = "", context = {}) {
+  const resolvedInputPath = path.resolve(normalizeText(filePath));
+  if (!resolvedInputPath) {
+    throw new Error("Missing sticker local file path.");
+  }
+  if (!fs.existsSync(resolvedInputPath)) {
+    throw new Error(`Sticker local file does not exist: ${resolvedInputPath}`);
+  }
+  const allowedRoots = buildStickerLocalAllowedRoots(config, context);
+  if (!allowedRoots.some((root) => isUnderDirectory(resolvedInputPath, root))) {
+    const paths = buildStickerPaths(config);
+    throw new Error(`Sticker local file must be under the current workspace, ${path.join(paths.stateDir, "generated")}, or ${paths.inboxDir}`);
+  }
+  const stat = fs.statSync(resolvedInputPath);
+  if (!stat.isFile()) {
+    throw new Error(`Sticker local file must be a file: ${resolvedInputPath}`);
+  }
+  return resolvedInputPath;
+}
+
+function buildStickerLocalAllowedRoots(config = {}, context = {}) {
+  const paths = buildStickerPaths(config);
+  return [
+    normalizeText(context?.workspaceRoot),
+    normalizeText(config.workspaceRoot),
+    path.join(paths.stateDir, "generated"),
+    paths.inboxDir,
+  ].filter(Boolean);
 }
 
 function mergeStickerTagCatalog(currentTags = [], incomingTags = []) {

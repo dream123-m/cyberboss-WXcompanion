@@ -48,11 +48,12 @@ class SystemMessageQueueStore {
   drainForAccount(accountId) {
     this.load();
     const normalizedAccountId = normalizeText(accountId);
+    const nowMs = Date.now();
     const drained = [];
     const pending = [];
 
     for (const message of this.state.messages) {
-      if (message.accountId === normalizedAccountId) {
+      if (message.accountId === normalizedAccountId && isReady(message, nowMs)) {
         drained.push(message);
       } else {
         pending.push(message);
@@ -72,6 +73,13 @@ class SystemMessageQueueStore {
     const normalizedAccountId = normalizeText(accountId);
     return this.state.messages.some((message) => message.accountId === normalizedAccountId);
   }
+
+  hasReadyForAccount(accountId) {
+    this.load();
+    const normalizedAccountId = normalizeText(accountId);
+    const nowMs = Date.now();
+    return this.state.messages.some((message) => message.accountId === normalizedAccountId && isReady(message, nowMs));
+  }
 }
 
 function normalizeSystemMessage(message) {
@@ -85,6 +93,9 @@ function normalizeSystemMessage(message) {
   const workspaceRoot = normalizeText(message.workspaceRoot);
   const text = normalizeText(message.text);
   const createdAt = normalizeIsoTime(message.createdAt);
+  const nextAttemptAt = normalizeIsoTime(message.nextAttemptAt);
+  const attempts = normalizeNonNegativeInteger(message.attempts);
+  const lastError = normalizeText(message.lastError);
 
   if (!id || !accountId || !senderId || !workspaceRoot || !text) {
     return null;
@@ -97,7 +108,20 @@ function normalizeSystemMessage(message) {
     workspaceRoot,
     text,
     createdAt: createdAt || new Date().toISOString(),
+    attempts,
+    nextAttemptAt,
+    lastError,
   };
+}
+
+function isReady(message, nowMs) {
+  const nextAttemptMs = Date.parse(message?.nextAttemptAt || "");
+  return !Number.isFinite(nextAttemptMs) || nextAttemptMs <= nowMs;
+}
+
+function normalizeNonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : 0;
 }
 
 function normalizeIsoTime(value) {

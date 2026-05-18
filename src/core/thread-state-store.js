@@ -104,6 +104,22 @@ class ThreadStateStore {
     return next;
   }
 
+  markStale(threadId, reason = "") {
+    const current = this.stateByThreadId.get(threadId);
+    if (!current) {
+      return null;
+    }
+    const next = {
+      ...current,
+      status: "failed",
+      lastError: normalizeText(reason) || "Runtime turn went stale.",
+      pendingApproval: null,
+      updatedAt: new Date().toISOString(),
+    };
+    this.stateByThreadId.set(threadId, next);
+    return next;
+  }
+
   snapshot() {
     return Array.from(this.stateByThreadId.values()).map((entry) => ({ ...entry }));
   }

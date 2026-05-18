@@ -9,6 +9,12 @@ class SystemMessageDispatcher {
     return this.queueStore.hasPendingForAccount(this.accountId);
   }
 
+  hasReady() {
+    return typeof this.queueStore.hasReadyForAccount === "function"
+      ? this.queueStore.hasReadyForAccount(this.accountId)
+      : this.hasPending();
+  }
+
   drainPending() {
     return this.queueStore.drainForAccount(this.accountId);
   }

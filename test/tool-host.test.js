@@ -16,6 +16,14 @@ function createHost() {
           return { id: "reminder-1", ...args };
         },
       },
+      state: {
+        read(args) {
+          return { namespace: args.namespace || "", value: { level: 1 } };
+        },
+        update(args) {
+          return { namespace: args.namespace, value: args.patch };
+        },
+      },
       system: {
         queueMessage(args) {
           return { id: "system-1", ...args };
@@ -84,6 +92,20 @@ function createHost() {
               tags: item.tags,
               desc: item.desc,
               filePath: `/tmp/stk_00${index + 1}.gif`,
+            })),
+          };
+        },
+        async saveFromFile(args) {
+          return {
+            createdCount: args.items.length,
+            dedupedCount: 0,
+            results: args.items.map((item, index) => ({
+              stickerId: `stk_10${index + 1}`,
+              created: true,
+              deduped: false,
+              tags: item.tags,
+              desc: item.desc,
+              filePath: item.filePath,
             })),
           };
         },
@@ -232,6 +254,27 @@ test("tool host validates structured reminder input types", async () => {
   }, /input\.delayMinutes must be an integer/);
 });
 
+test("tool host exposes generic state tools", async () => {
+  const host = createHost();
+  const tools = host.listTools();
+  const readTool = tools.find((tool) => tool.name === "cyberboss_state_read");
+  const updateTool = tools.find((tool) => tool.name === "cyberboss_state_update");
+  const readResult = await host.invokeTool("cyberboss_state_read", {
+    namespace: "relationship",
+  }, {});
+  const updateResult = await host.invokeTool("cyberboss_state_update", {
+    namespace: "relationship",
+    patch: { intimacy: { score: 2 } },
+    reason: "meaningful exchange",
+  }, {});
+
+  assert.ok(readTool);
+  assert.ok(updateTool);
+  assert.equal(readResult.text, "State loaded: relationship.");
+  assert.equal(updateResult.text, "State updated: relationship.");
+  assert.deepEqual(updateResult.data.value, { intimacy: { score: 2 } });
+});
+
 test("tool host exposes sticker tools with compact structured outputs", async () => {
   const host = createHost();
   const tagsResult = await host.invokeTool("cyberboss_sticker_tags", {}, {});
@@ -259,6 +302,13 @@ test("tool host exposes sticker tools with compact structured outputs", async ()
       desc: "重复",
     }],
   }, {});
+  const localSaveResult = await host.invokeTool("cyberboss_sticker_save_from_file", {
+    items: [{
+      filePath: "/tmp/generated/cat.png",
+      tags: ["generated"],
+      desc: "generated local sticker file",
+    }],
+  }, {});
   const updateResult = await host.invokeTool("cyberboss_sticker_update", {
     items: [{
       stickerId: "stk_001",
@@ -275,6 +325,7 @@ test("tool host exposes sticker tools with compact structured outputs", async ()
   assert.equal(deleteResult.text, "Sticker batch deleted: 1.");
   assert.equal(saveResult.text, "Sticker batch processed: 1 saved, 0 already existed.");
   assert.match(duplicateSaveResult.text, /Do not mention duplicates; just reply normally\./);
+  assert.equal(localSaveResult.text, "Sticker batch processed: 1 saved, 0 already existed.");
   assert.equal(updateResult.text, "Sticker batch updated: 1.");
 });
 

@@ -4,6 +4,7 @@ const { createTimelineIntegration } = require("../integrations/timeline");
 const { ChannelFileService } = require("../services/channel-file-service");
 const { DiaryService } = require("../services/diary-service");
 const { ReminderService } = require("../services/reminder-service");
+const { StateService } = require("../services/state-service");
 const { StickerService } = require("../services/sticker-service");
 const { SystemMessageService } = require("../services/system-message-service");
 const { TimelineService } = require("../services/timeline-service");
@@ -25,6 +26,7 @@ function createProjectTooling(config, options = {}) {
   const services = {
     diary: new DiaryService({ config }),
     reminder: new ReminderService({ config, sessionStore }),
+    state: new StateService({ config }),
     system: new SystemMessageService({ config, sessionStore }),
     channelFile,
     sticker: new StickerService({ config, channelAdapter, sessionStore, channelFileService: channelFile }),
