@@ -104,6 +104,28 @@ test("system send_message JSON sends only the message text", async () => {
   });
 });
 
+test("system send_message JSON prefers the content field", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-content", {
+    userId: "user-content",
+    contextToken: "ctx-content",
+    provider: "system",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-content",
+    turnId: "turn-content",
+    itemId: "item-content",
+    text: "{\"action\":\"send_message\",\"content\":\"我刚刚想起你了。\",\"message\":\"旧字段\"}",
+  });
+
+  assert.deepEqual(sent, [{
+    userId: "user-content",
+    text: "我刚刚想起你了。",
+    contextToken: "ctx-content",
+  }]);
+});
+
 test("explicit turn target binding overrides the binding-level fallback", async () => {
   const { sent, streamDelivery, bindingByThreadId } = createHarness();
   bindingByThreadId.set("thread-2b", { bindingKey: "binding-2b" });

@@ -53,11 +53,14 @@ function buildSystemInboundText(text, createdAt = "") {
     ...(localTime ? [`[${localTime}]`, ""] : []),
     "SYSTEM ACTION MODE: internal trigger, not user chat.",
     "Do any timeline/diary/reminder/whereabouts work in this turn.",
-    "If you act, end with send_message that briefly and naturally reflects what you did or what changed; use silent only if you do nothing.",
-    "Return exactly one JSON object after any tool calls:",
+    "If you act, put the natural persona text inside the JSON content field; use silent only if you do nothing.",
+    "Your final assistant message MUST be exactly one raw JSON object after any tool calls.",
+    "Allowed final JSON shapes:",
     "{\"action\":\"silent\"}",
-    "{\"action\":\"send_message\",\"message\":\"<one short natural WeChat message>\"}",
-    "No reasoning. No text outside the JSON.",
+    "{\"action\":\"send_message\",\"content\":\"<one short natural WeChat message>\"}",
+    "Do not return plain natural language as the final answer.",
+    "Do not wrap the JSON in markdown or code fences.",
+    "No reasoning. No text before or after the JSON.",
   ];
   if (body) {
     sections.push("", "Trigger:", body);

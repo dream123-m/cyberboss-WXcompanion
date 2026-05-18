@@ -739,9 +739,9 @@ function resolveSystemReplyAction(replyText) {
     return { kind: "invalid", reason: "unsupported action" };
   }
 
-  const message = sanitizeProtocolLeakText(normalizeLineEndings(String(parsed.message || parsed.text || ""))).text.trim();
+  const message = sanitizeProtocolLeakText(normalizeLineEndings(String(parsed.content || parsed.message || parsed.text || ""))).text.trim();
   if (!message) {
-    return { kind: "invalid", reason: "send_message requires a non-empty message" };
+    return { kind: "invalid", reason: "send_message requires a non-empty content" };
   }
 
   return { kind: "send_message", message };
