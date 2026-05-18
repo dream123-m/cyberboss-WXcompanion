@@ -12,19 +12,24 @@ License 继承原项目：`AGPL-3.0-only`。请保留原作者与原项目来源
 
 ## 图片展示
 
-> 下面是占位图。你可以把真实截图放到 `docs/images/` 后替换这些文件。
-
 ### 小窝 Dashboard
 
-![小窝 Dashboard](./docs/images/dashboard-placeholder.svg)
+<img width="1889" height="958" alt="image" src="https://github.com/user-attachments/assets/d7d0b259-ba58-4c7a-9823-2e92271be937" />
+
 
 ### 微信对话效果
 
-![微信对话效果](./docs/images/wechat-placeholder.svg)
+<img width="3537" height="2556" alt="f6859fe7cb23335d15783dc70a82987" src="https://github.com/user-attachments/assets/e4e3354c-d8fe-4bf7-9873-6353dd38c456" />
+
 
 ### 日记本与表情抽屉
 
-![日记本与表情抽屉](./docs/images/diary-stickers-placeholder.svg)
+<img width="1917" height="954" alt="c9e35c8e2992b4acff31e218181a93a" src="https://github.com/user-attachments/assets/fcbbcfa6-cb55-431f-b223-c33db6fa7828" />
+
+<img width="1676" height="169" alt="image" src="https://github.com/user-attachments/assets/5319280d-0965-48b3-a2fb-3dacf794d718" />
+
+<img width="1900" height="951" alt="81297e66b6f6a7a5f8e88eb30fa304e" src="https://github.com/user-attachments/assets/8788c195-7dc1-4cf9-a723-01255dfd3be9" />
+
 
 ## 主要功能
 
