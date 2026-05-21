@@ -52,6 +52,9 @@ const MAX_SYSTEM_MESSAGE_ATTEMPTS = 3;
 const PRE_THREAD_TURN_GATE_STALE_MS = 2 * 60_000;
 const ATTACHED_TURN_GATE_STALE_MS = 10 * 60_000;
 const RUNNING_THREAD_STALE_MS = 20 * 60_000;
+const SEND_TURN_TIMEOUT_MS = 90_000;
+const SYSTEM_TURN_WATCHDOG_MS = 2 * 60_000;
+const USER_TURN_WATCHDOG_MS = 8 * 60_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
 
@@ -85,6 +88,7 @@ class CyberbossApp {
     this.pendingInboundByScope = new Map();
     this.pendingImageInboundByScope = new Map();
     this.turnBoundaryScopeKeys = new Set();
+    this.turnWatchdogTimersByScope = new Map();
     this.systemMessageDispatcher = null;
     this.streamDelivery = new StreamDelivery({
       channelAdapter: this.channelAdapter,
@@ -159,6 +163,7 @@ class CyberbossApp {
     }
 
     const shutdown = createShutdownController(async () => {
+      this.clearTurnWatchdogs();
       this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
@@ -203,11 +208,16 @@ class CyberbossApp {
 
           consecutiveFailures += 1;
           console.error(`[cyberboss] poll failed: ${formatErrorMessage(error)}`);
+          const errorStack = formatErrorStack(error);
+          if (errorStack) {
+            console.error(`[cyberboss] poll failed stack:\n${errorStack}`);
+          }
           await sleep(consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS);
         }
       }
     } finally {
       shutdown.dispose();
+      this.clearTurnWatchdogs();
       this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
@@ -517,7 +527,7 @@ class CyberbossApp {
       const sendTurn = typeof this.runtimeAdapter.sendTurn === "function"
         ? this.runtimeAdapter.sendTurn.bind(this.runtimeAdapter)
         : this.runtimeAdapter.sendTextTurn.bind(this.runtimeAdapter);
-      const turn = await sendTurn({
+      const turn = await withTimeout(sendTurn({
         bindingKey,
         workspaceRoot,
         text: runtimeTurn.text,
@@ -528,7 +538,7 @@ class CyberbossApp {
           accountId: prepared.accountId,
           senderId: prepared.senderId,
         },
-      });
+      }), SEND_TURN_TIMEOUT_MS, "runtime sendTurn timed out before the turn was accepted");
       this.runtimeContextStore?.setActiveContext?.({
         workspaceRoot,
         runtimeId: this.runtimeAdapter.describe().id,
@@ -538,6 +548,17 @@ class CyberbossApp {
         senderId: prepared.senderId,
       });
       this.turnGateStore.attachThread(pendingScopeKey, turn.threadId);
+      if (typeof this.scheduleTurnWatchdog === "function") {
+        this.scheduleTurnWatchdog({
+          bindingKey,
+          workspaceRoot,
+          threadId: turn.threadId,
+          turnId: turn.turnId,
+          provider: prepared.provider,
+          senderId: prepared.senderId,
+          contextToken: prepared.contextToken,
+        });
+      }
       const replyTarget = {
         userId: prepared.senderId,
         contextToken: prepared.contextToken,
@@ -556,6 +577,10 @@ class CyberbossApp {
     } catch (error) {
       this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
       const messageText = error instanceof Error ? error.message : String(error || "unknown error");
+      if (prepared?.provider === "system") {
+        console.error(`[cyberboss] dropped failed system turn binding=${bindingKey} workspace=${workspaceRoot} reason=${messageText}`);
+        return true;
+      }
       await this.channelAdapter.sendText({
         userId: prepared.senderId,
         text: `❌ Request failed\n${messageText}`,
@@ -563,6 +588,118 @@ class CyberbossApp {
       }).catch(() => {});
       return false;
     }
+  }
+
+  scheduleTurnWatchdog({
+    bindingKey = "",
+    workspaceRoot = "",
+    threadId = "",
+    turnId = "",
+    provider = "",
+    senderId = "",
+    contextToken = "",
+  } = {}) {
+    const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
+    if (!scopeKey || !threadId) {
+      return;
+    }
+    this.clearTurnWatchdog(scopeKey);
+    const isSystemTurn = provider === "system";
+    const timeoutMs = isSystemTurn ? SYSTEM_TURN_WATCHDOG_MS : USER_TURN_WATCHDOG_MS;
+    const startedAt = Date.now();
+    const timer = setTimeout(() => {
+      void this.forceReleaseTurnWatchdog({
+        scopeKey,
+        bindingKey,
+        workspaceRoot,
+        threadId,
+        turnId,
+        provider,
+        senderId,
+        contextToken,
+        startedAt,
+        timeoutMs,
+      }).catch((error) => {
+        const message = error instanceof Error ? error.stack || error.message : String(error);
+        console.error(`[cyberboss] turn watchdog release failed ${message}`);
+      });
+    }, timeoutMs);
+    this.turnWatchdogTimersByScope.set(scopeKey, timer);
+  }
+
+  clearTurnWatchdog(scopeKey) {
+    const normalizedScopeKey = normalizeText(scopeKey);
+    if (!normalizedScopeKey) {
+      return;
+    }
+    const timer = this.turnWatchdogTimersByScope.get(normalizedScopeKey);
+    if (timer) {
+      clearTimeout(timer);
+      this.turnWatchdogTimersByScope.delete(normalizedScopeKey);
+    }
+  }
+
+  clearTurnWatchdogForThread(threadId) {
+    const linked = this.runtimeAdapter.getSessionStore().findBindingForThreadId(threadId);
+    const scopeKey = linked?.bindingKey && linked?.workspaceRoot
+      ? buildScopeKey(linked.bindingKey, linked.workspaceRoot)
+      : "";
+    if (scopeKey) {
+      this.clearTurnWatchdog(scopeKey);
+    }
+  }
+
+  clearTurnWatchdogs() {
+    for (const timer of this.turnWatchdogTimersByScope.values()) {
+      clearTimeout(timer);
+    }
+    this.turnWatchdogTimersByScope.clear();
+  }
+
+  async forceReleaseTurnWatchdog({
+    scopeKey,
+    bindingKey,
+    workspaceRoot,
+    threadId,
+    turnId = "",
+    provider = "",
+    senderId = "",
+    contextToken = "",
+    startedAt = Date.now(),
+    timeoutMs = 0,
+  }) {
+    const pending = this.turnGateStore.getPending?.(bindingKey, workspaceRoot);
+    if (!pending) {
+      this.clearTurnWatchdog(scopeKey);
+      return;
+    }
+
+    const threadState = this.threadStateStore.getThreadState(threadId);
+    if (hasRpcId(threadState?.pendingApproval?.requestId)) {
+      return;
+    }
+
+    const ageMs = Date.now() - startedAt;
+    this.threadStateStore.markStale?.(
+      threadId,
+      `Runtime turn watchdog timed out after ${Math.round(ageMs / 1000)}s.`
+    );
+    this.turnGateStore.releaseThread(threadId);
+    this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
+    this.clearTurnWatchdog(scopeKey);
+    console.error(
+      `[cyberboss] force released stuck turn binding=${bindingKey} workspace=${workspaceRoot} thread=${threadId} turn=${turnId || ""} provider=${provider || ""} timeoutMs=${timeoutMs}`
+    );
+
+    if (provider !== "system" && senderId && contextToken) {
+      await this.channelAdapter.sendText({
+        userId: senderId,
+        text: "⚠️ 上一轮运行超时，我已经自动释放锁。你可以直接重新发一遍。",
+        contextToken,
+      }).catch(() => {});
+    }
+
+    await this.flushPendingInboundMessages({ bindingKey, workspaceRoot, ignoreBoundary: true });
   }
 
   async buildRuntimeTurn({ prepared, model = "" }) {
@@ -1605,6 +1742,9 @@ class CyberbossApp {
       return;
     }
     if (event.type === "runtime.turn.completed" || event.type === "runtime.turn.failed") {
+      if (typeof this.clearTurnWatchdogForThread === "function") {
+        this.clearTurnWatchdogForThread(event.payload.threadId);
+      }
       const completedRunKey = buildRunKey(event.payload.threadId, event.payload.turnId);
       const pendingOperations = this.pendingOperationByRunKey;
       const pendingOperation = pendingOperations?.get?.(completedRunKey) || null;
@@ -1983,6 +2123,33 @@ function formatErrorMessage(error) {
     return "The WeChat session has expired. Run `npm run login` again.";
   }
   return raw;
+}
+
+function formatErrorStack(error) {
+  if (!(error instanceof Error)) {
+    return "";
+  }
+  const stack = typeof error.stack === "string" ? error.stack.trim() : "";
+  if (!stack || stack === error.message) {
+    return "";
+  }
+  return stack;
+}
+
+function withTimeout(promise, timeoutMs, message = "operation timed out") {
+  const normalizedTimeoutMs = Number(timeoutMs);
+  if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs <= 0) {
+    return promise;
+  }
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), normalizedTimeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
 }
 
 function sleep(ms) {

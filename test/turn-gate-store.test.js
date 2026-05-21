@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { CyberbossApp } = require("../src/core/app");
+const { ThreadStateStore } = require("../src/core/thread-state-store");
 const { TurnGateStore } = require("../src/core/turn-gate-store");
 
 test("turn gate tracks pending scopes until the turn is released", () => {
@@ -760,4 +761,69 @@ test("flushPendingInboundMessages falls back to messageId ordering when received
   assert.equal(dispatched.length, 1);
   assert.equal(dispatched[0].prepared.contextToken, "ctx-200");
   assert.match(dispatched[0].prepared.text, /第一条[\s\S]*第二条[\s\S]*第三条/);
+});
+
+test("turn watchdog force releases stuck turns and flushes queued inbound work", async () => {
+  const gate = new TurnGateStore();
+  const scopeKey = gate.begin("binding-1", "/workspace");
+  gate.attachThread(scopeKey, "thread-1");
+  const flushed = [];
+  const marked = [];
+
+  const appLike = {
+    turnGateStore: gate,
+    threadStateStore: {
+      getThreadState() {
+        return { threadId: "thread-1", status: "running", pendingApproval: null };
+      },
+      markStale(threadId, reason) {
+        marked.push({ threadId, reason });
+      },
+    },
+    turnWatchdogTimersByScope: new Map([[scopeKey, setTimeout(() => {}, 1000)]]),
+    clearTurnWatchdog: CyberbossApp.prototype.clearTurnWatchdog,
+    async flushPendingInboundMessages(payload) {
+      flushed.push(payload);
+    },
+    channelAdapter: {
+      async sendText() {},
+    },
+  };
+
+  await CyberbossApp.prototype.forceReleaseTurnWatchdog.call(appLike, {
+    scopeKey,
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    provider: "system",
+    startedAt: Date.now() - 120_000,
+    timeoutMs: 120_000,
+  });
+
+  assert.equal(gate.isPending("binding-1", "/workspace"), false);
+  assert.equal(marked.length, 1);
+  assert.equal(marked[0].threadId, "thread-1");
+  assert.deepEqual(flushed, [{
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    ignoreBoundary: true,
+  }]);
+});
+
+test("ThreadStateStore markStale records stale reason without ReferenceError", () => {
+  const store = new ThreadStateStore();
+  store.applyRuntimeEvent({
+    type: "runtime.turn.started",
+    payload: {
+      threadId: "thread-stale",
+      turnId: "turn-stale",
+    },
+  });
+
+  const next = store.markStale("thread-stale", "  stale by watchdog  ");
+
+  assert.equal(next.status, "failed");
+  assert.equal(next.pendingApproval, null);
+  assert.equal(next.lastError, "stale by watchdog");
 });
